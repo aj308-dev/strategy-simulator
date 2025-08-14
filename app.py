@@ -1,135 +1,174 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
+import matplotlib.pyplot as plt
+from io import BytesIO
+import base64
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
 
 st.set_page_config(page_title="Business Strategy Simulator", page_icon="📊", layout="wide")
 
-# --- Page Navigation ---
-pages = ["Welcome", "Inputs", "Simulation", "Insights & Feedback", "Export"]
-page = st.sidebar.radio("📂 Navigation", pages)
+# --- Helper functions ---
+def download_link(df, file_type="csv"):
+    buffer = BytesIO()
+    if file_type == "csv":
+        df.to_csv(buffer, index=False)
+        mime = "text/csv"
+        ext = "csv"
+    elif file_type == "excel":
+        df.to_excel(buffer, index=False)
+        mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ext = "xlsx"
+    buffer.seek(0)
+    b64 = base64.b64encode(buffer.read()).decode()
+    href = f'<a href="data:{mime};base64,{b64}" download="strategy_results.{ext}">📥 Download {file_type.upper()}</a>'
+    return href
 
-# --- Shared state ---
-if 'simulation_data' not in st.session_state:
-    st.session_state.simulation_data = None
-if 'inputs' not in st.session_state:
-    st.session_state.inputs = {}
+def generate_feedback(predicted, actual):
+    gap = actual - predicted
+    if gap > 0:
+        return [
+            "Your strategy performed better than predicted — scale the approach.",
+            "Consider reinvesting profits into marketing or product improvement.",
+            "Evaluate if similar strategies can work in new markets."
+        ]
+    else:
+        return [
+            "Results underperformed prediction — review your cost structure.",
+            "Reassess pricing and customer acquisition channels.",
+            "Run a smaller pilot before full-scale rollout next time."
+        ]
 
-# --- PAGE 1: Welcome ---
-if page == "Welcome":
+def generate_pdf_report(df, avg_pred, avg_act, feedback):
+    buffer = BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+
+    # Title
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(50, height - 50, "Business Strategy Simulation Report")
+
+    # Average Revenue
+    c.setFont("Helvetica", 12)
+    c.drawString(50, height - 80, f"Predicted Average Revenue: ${avg_pred:,.2f}")
+    c.drawString(50, height - 100, f"Actual Average Revenue: ${avg_act:,.2f}")
+
+    # Feedback
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(50, height - 130, "Recommendations:")
+    c.setFont("Helvetica", 12)
+    y = height - 150
+    for tip in feedback:
+        c.drawString(60, y, f"- {tip}")
+        y -= 20
+
+    # Data Table
+    y -= 20
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(50, y, "Simulation Data:")
+    y -= 20
+    c.setFont("Helvetica", 10)
+    for i, row in df.iterrows():
+        c.drawString(60, y, f"Month {int(row['Month'])} | Predicted: ${row['PredictedRevenue']:,.2f} | Actual: ${row['ActualRevenue']:,.2f} | Cost: ${row['Cost']:,.2f}")
+        y -= 15
+        if y < 50:
+            c.showPage()
+            y = height - 50
+
+    c.showPage()
+    c.save()
+    buffer.seek(0)
+    return buffer
+
+# --- App navigation ---
+st.sidebar.title("📊 Navigation")
+page = st.sidebar.radio("Go to", ["Overview", "Input Data", "Run Simulation", "Summary"])
+
+# --- Pages ---
+if page == "Overview":
     st.title("📊 Business Strategy Simulator")
-    st.markdown("""
-    ### Plan, simulate, and improve your business strategies  
-    This tool lets you:
-    - Enter your business metrics
-    - Simulate performance month-by-month
-    - Get automatic feedback & improvement tips
-    - Export results as CSV or PDF
-
-    **Start by going to the _Inputs_ page in the left menu.**
+    st.write("""
+    This tool helps you:
+    - Plan your business strategy
+    - Run a simulation of predicted vs actual outcomes
+    - Get automated, actionable feedback
+    - Export a professional report
     """)
-    st.image("https://images.unsplash.com/photo-1542744173-8e7e53415bb0", use_column_width=True)
+    st.success("Move to 'Input Data' to start planning your strategy.")
 
-# --- PAGE 2: Inputs ---
-elif page == "Inputs":
-    st.title("📥 Enter Your Business Metrics")
+elif page == "Input Data":
+    st.title("📥 Input Strategy Details")
+    col1, col2 = st.columns(2)
+    with col1:
+        revenue = st.number_input("Predicted Monthly Revenue ($)", 1000, 1000000, 50000, step=1000)
+        cost = st.number_input("Predicted Monthly Cost ($)", 500, 500000, 20000, step=500)
+    with col2:
+        growth = st.slider("Predicted Monthly Growth Rate (%)", 0.0, 50.0, 5.0)
+        months = st.slider("Simulation Period (months)", 1, 36, 12)
+    st.session_state["predictions"] = {
+        "Revenue": revenue,
+        "Cost": cost,
+        "GrowthRate": growth,
+        "Months": months
+    }
+    st.success("Data saved. Move to 'Run Simulation'.")
 
-    mrr = st.number_input("💰 Monthly Recurring Revenue (MRR) [$]", min_value=0.0, value=10000.0, step=100.0,
-                          help="The revenue you earn every month from subscriptions or contracts.")
-    customers = st.number_input("👥 Current Customers", min_value=0, value=100, step=1,
-                                 help="Number of paying customers right now.")
-    churn_rate = st.number_input("📉 Monthly Churn Rate (%)", min_value=0.0, value=5.0, step=0.1,
-                                  help="The % of customers who leave each month.")
-    cac = st.number_input("🎯 Customer Acquisition Cost (CAC) [$]", min_value=0.0, value=200.0, step=10.0,
-                           help="Average cost to acquire one new customer.")
-    marketing_budget = st.number_input("📢 Monthly Marketing Budget [$]", min_value=0.0, value=5000.0, step=100.0,
-                                       help="Amount you spend monthly to acquire customers.")
-    arpu = st.number_input("💵 Average Revenue Per User (ARPU) [$]", min_value=0.0, value=100.0, step=1.0,
-                           help="Average monthly revenue per customer.")
-    months = st.slider("🗓 Simulation Duration (months)", min_value=1, max_value=36, value=12)
-
-    if st.button("Run Simulation"):
-        st.session_state.inputs = {
-            "mrr": mrr,
-            "customers": customers,
-            "churn_rate": churn_rate / 100,
-            "cac": cac,
-            "marketing_budget": marketing_budget,
-            "arpu": arpu,
-            "months": months
-        }
-
-        # Run simulation
-        data = []
-        curr_customers = customers
-        curr_mrr = mrr
-        for month in range(1, months + 1):
-            churned = curr_customers * st.session_state.inputs["churn_rate"]
-            new_customers = marketing_budget / cac if cac > 0 else 0
-            curr_customers = curr_customers - churned + new_customers
-            curr_mrr = curr_customers * arpu
-            data.append({
-                "Month": month,
-                "Customers": round(curr_customers, 2),
-                "MRR": round(curr_mrr, 2),
-                "New Customers": round(new_customers, 2),
-                "Churned Customers": round(churned, 2)
-            })
-
-        st.session_state.simulation_data = pd.DataFrame(data)
-        st.success("Simulation completed! Go to the **Simulation** page to see results.")
-
-# --- PAGE 3: Simulation ---
-elif page == "Simulation":
-    st.title("📈 Simulation Results")
-    if st.session_state.simulation_data is not None:
-        st.dataframe(st.session_state.simulation_data)
-
-        fig1 = px.line(st.session_state.simulation_data, x="Month", y="Customers", title="Customer Growth Over Time")
-        fig2 = px.line(st.session_state.simulation_data, x="Month", y="MRR", title="MRR Growth Over Time")
-
-        st.plotly_chart(fig1, use_container_width=True)
-        st.plotly_chart(fig2, use_container_width=True)
+elif page == "Run Simulation":
+    st.title("▶ Run Simulation")
+    if "predictions" not in st.session_state:
+        st.error("Please input your data first in 'Input Data'.")
     else:
-        st.warning("Please run a simulation from the **Inputs** page first.")
+        data = st.session_state["predictions"]
+        predicted_rev = data["Revenue"]
+        predicted_cost = data["Cost"]
+        growth_rate = data["GrowthRate"] / 100
+        months = data["Months"]
 
-# --- PAGE 4: Insights ---
-elif page == "Insights & Feedback":
-    st.title("💡 Insights & Feedback")
-    if st.session_state.simulation_data is not None:
-        df = st.session_state.simulation_data
-        final_customers = df["Customers"].iloc[-1]
-        final_mrr = df["MRR"].iloc[-1]
-        churn_rate = st.session_state.inputs["churn_rate"]
-        cac = st.session_state.inputs["cac"]
-        arpu = st.session_state.inputs["arpu"]
+        results = []
+        actual_factor = 0.9 + (0.2 * pd.np.random.rand())  # randomness
+        for m in range(1, months+1):
+            pred = predicted_rev * ((1 + growth_rate) ** (m-1))
+            act = pred * actual_factor
+            results.append([m, pred, act, data["Cost"]])
+        df = pd.DataFrame(results, columns=["Month", "PredictedRevenue", "ActualRevenue", "Cost"])
+        st.session_state["results_df"] = df
+        st.success("Simulation complete! Check the 'Summary' page.")
 
-        ltv = arpu * (1 / churn_rate) if churn_rate > 0 else float('inf')
-        ltv_cac = ltv / cac if cac > 0 else float('inf')
-
-        st.metric("Final Customers", round(final_customers))
-        st.metric("Final MRR ($)", round(final_mrr))
-        st.metric("LTV ($)", round(ltv, 2))
-        st.metric("LTV : CAC", round(ltv_cac, 2))
-
-        if churn_rate > 0.07:
-            st.error("⚠ High churn rate — aim for below 7% per month.")
-        elif churn_rate > 0.05:
-            st.warning("⚠ Churn slightly high — aim for below 5% per month.")
-        else:
-            st.success("✅ Healthy churn rate!")
-
-        if ltv_cac < 3:
-            st.error("⚠ LTV:CAC ratio too low — aim for at least 3:1.")
-        else:
-            st.success("✅ Good LTV:CAC ratio.")
+elif page == "Summary":
+    st.title("📈 Strategy Summary & Insights")
+    if "results_df" not in st.session_state:
+        st.error("Please run the simulation first.")
     else:
-        st.warning("Please run a simulation first.")
+        df = st.session_state["results_df"]
+        st.subheader("Performance Chart")
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.plot(df["Month"], df["PredictedRevenue"], label="Predicted Revenue", marker="o")
+        ax.plot(df["Month"], df["ActualRevenue"], label="Actual Revenue", marker="x")
+        ax.set_xlabel("Month")
+        ax.set_ylabel("Revenue ($)")
+        ax.legend()
+        st.pyplot(fig)
 
-# --- PAGE 5: Export ---
-elif page == "Export":
-    st.title("📤 Export Results")
-    if st.session_state.simulation_data is not None:
-        csv = st.session_state.simulation_data.to_csv(index=False).encode('utf-8')
-        st.download_button(label="Download as CSV", data=csv, file_name='simulation_results.csv', mime='text/csv')
-    else:
-        st.warning("Please run a simulation first.")
+        avg_pred = df["PredictedRevenue"].mean()
+        avg_act = df["ActualRevenue"].mean()
+        st.subheader("📊 Average Performance")
+        st.write(f"**Predicted Avg Revenue:** ${avg_pred:,.2f}")
+        st.write(f"**Actual Avg Revenue:** ${avg_act:,.2f}")
+
+        st.subheader("💡 Recommendations")
+        feedback = generate_feedback(avg_pred, avg_act)
+        for tip in feedback:
+            st.write(f"- {tip}")
+
+        st.subheader("📥 Download Results")
+        st.markdown(download_link(df, "csv"), unsafe_allow_html=True)
+        st.markdown(download_link(df, "excel"), unsafe_allow_html=True)
+
+        pdf_buffer = generate_pdf_report(df, avg_pred, avg_act, feedback)
+        st.download_button(
+            label="📄 Download PDF Report",
+            data=pdf_buffer,
+            file_name="strategy_report.pdf",
+            mime="application/pdf"
+        )
+
